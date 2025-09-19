@@ -1,3 +1,4 @@
+
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,7 +14,6 @@ double now_sec(void) {
   clock_gettime(CLOCK_MONOTONIC, &ts);
   return ts.tv_sec + ts.tv_nsec * 1e-9;
 }
-
 static void write_full(int fd, const void *buf, size_t n) {
   const char *p = (const char *)buf;
   size_t off = 0;
@@ -51,17 +51,13 @@ static void read_full(int fd, void *buf, size_t n) {
 
 int main() {
   int fd1[2], fd2[2];
-  int sizes[] = {4,          16,         64,          256,
-                 1024,       4 * 1024,   16 * 1024,   64 * 1024,
-                 256 * 1024, 512 * 1024, 1024 * 1024, 50 * 1024 * 1024};
-  int nsizes = (int)(sizeof(sizes) / sizeof(sizes[0]));
+  int size = 512 * 1024;
 
   if (pipe(fd1) || pipe(fd2)) {
     perror("Pipe failed\n");
     exit(1);
   }
 
-  const size_t TOTAL = 100 * 1024 * 1024; // 100 MiB
   pid_t p = fork();
   if (p < 0) {
     perror("Fork failed\n");
@@ -69,50 +65,33 @@ int main() {
     close(fd1[1]);
     close(fd2[0]); // Not writing to the first or reading from second
 
-    char *buf = malloc(50 * 1024 * 1024); // Max size
-    for (int i = 0; i < nsizes; ++i) {
-      for (int j = 0; j < 5; ++j) {
-        size_t remaining = TOTAL;
-        while (remaining > 0) {
-          size_t chunk = remaining < sizes[i] ? remaining : sizes[i];
-          read_full(fd1[0], buf, chunk);
-          remaining -= chunk;
-        }
-        write_full(fd2[1], buf, 1);
-      }
+    char buf[512 * 1024]; // Max size
+    for (int j = 0; j < 1000; ++j) {
+      read_full(fd1[0], buf, size);
+      write_full(fd2[1], buf, size);
     }
-    free(buf);
     exit(0);
   } // We are in the parent
 
   close(fd1[0]);
   close(fd2[1]);
 
-  char *buf = malloc(50 * 1024 * 1024); // Max size
-  for (int i = 0; i < nsizes; ++i) {
-    double best = 1e9;
+  char buf[512 * 1024];
+  double best = 1e9;
 
-    for (int j = 0; j < 5; ++j) {
-      double t0 = now_sec();
-      size_t sent = 0;
-      while (sent < TOTAL) {
-        size_t chunk = (TOTAL - sent) < sizes[i] ? (TOTAL - sent) : sizes[i];
-        write_full(fd1[1], buf, chunk);
-        sent += chunk;
-      }
-      read_full(fd2[0], buf, 1);
-      double t1 = now_sec();
+  for (int j = 0; j < 1000; ++j) {
+    double t0 = now_sec();
+    write_full(fd1[1], buf, size);
+    read_full(fd2[0], buf, size);
+    double t1 = now_sec();
 
-      if (t1 - t0 < best)
-        best = t1 - t0;
-    }
-    double throughput = TOTAL / best;
-    printf("Size %d bytes: throughput = %f bits / second \n", sizes[i],
-           throughput * 8);
+    if (t1 - t0 < best)
+      best = t1 - t0;
   }
+  printf("Size %d bytes: one-way latency = %f microseconds \n", size,
+         (best / 2) * 1e6);
   close(fd1[1]);
   close(fd2[0]);
-  free(buf);
   wait(NULL);
 
   return 0;
